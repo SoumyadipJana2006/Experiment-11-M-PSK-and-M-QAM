@@ -1,2 +1,783 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# ==============================================================
+# EXPERIMENT 11: M-PSK AND M-QAM
+# ==============================================================
+# Modulations:
+#   1. QPSK
+#   2. 8-PSK
+#   3. 16-QAM
+#   4. 64-QAM
+#
+# Required plots:
+#   1. Ideal / received constellations
+#   2. Decision regions
+#   3. BER and SER
+#   4. BER versus spectral efficiency
+#
+# Detection:
+#   Minimum Euclidean distance
+#
+# Channel:
+#   AWGN
+# ==============================================================
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+np.random.seed(10)
+
+
+# ==============================================================
+# 1. GRAY CODE
+# ==============================================================
+
+def binary_to_gray(n):
+    return n ^ (n >> 1)
+
+
+# ==============================================================
+# 2. GENERATE M-PSK CONSTELLATION
+# ==============================================================
+
+def create_psk(M):
+
+    k = int(np.log2(M))
+
+    # Symbol phases
+    phase = 2 * np.pi * np.arange(M) / M
+
+    constellation = np.exp(1j * phase)
+
+    # Gray labels around the constellation
+    labels = np.array([binary_to_gray(i) for i in range(M)])
+
+    # Average energy before normalization
+    energy_before = np.mean(np.abs(constellation) ** 2)
+
+    # Normalize to Es = 1
+    constellation = constellation / np.sqrt(energy_before)
+
+    energy_after = np.mean(np.abs(constellation) ** 2)
+
+    return constellation, labels, energy_before, energy_after
+
+
+# ==============================================================
+# 3. GENERATE SQUARE M-QAM CONSTELLATION
+# ==============================================================
+
+def create_qam(M):
+
+    side = int(np.sqrt(M))
+
+    # Example:
+    # 16-QAM -> [-3, -1, 1, 3]
+    # 64-QAM -> [-7, -5, -3, -1, 1, 3, 5, 7]
+
+    levels = np.arange(-(side - 1), side, 2)
+
+    constellation = []
+    labels = []
+
+    bits_axis = int(np.log2(side))
+
+    for q_index in range(side):
+
+        for i_index in range(side):
+
+            I = levels[i_index]
+            Q = levels[q_index]
+
+            constellation.append(I + 1j * Q)
+
+            # Gray code separately on I and Q axes
+            gray_I = binary_to_gray(i_index)
+            gray_Q = binary_to_gray(q_index)
+
+            label = (gray_Q << bits_axis) | gray_I
+
+            labels.append(label)
+
+    constellation = np.array(constellation, dtype=complex)
+    labels = np.array(labels)
+
+    # Mandatory validation:
+    # energy before normalization
+    energy_before = np.mean(np.abs(constellation) ** 2)
+
+    # Normalize average symbol energy to 1
+    constellation /= np.sqrt(energy_before)
+
+    energy_after = np.mean(np.abs(constellation) ** 2)
+
+    return constellation, labels, energy_before, energy_after
+
+
+# ==============================================================
+# 4. GET CONSTELLATION
+# ==============================================================
+
+def get_constellation(name):
+
+    if name == "QPSK":
+        return create_psk(4)
+
+    elif name == "8-PSK":
+        return create_psk(8)
+
+    elif name == "16-QAM":
+        return create_qam(16)
+
+    elif name == "64-QAM":
+        return create_qam(64)
+
+    else:
+        raise ValueError("Unknown modulation")
+
+
+# ==============================================================
+# 5. INTEGER TO BITS
+# ==============================================================
+
+def integers_to_bits(values, bits_per_symbol):
+
+    values = np.asarray(values)
+
+    bit_matrix = (
+        (values[:, None] >>
+         np.arange(bits_per_symbol - 1, -1, -1))
+        & 1
+    )
+
+    return bit_matrix.reshape(-1)
+
+
+# ==============================================================
+# 6. MAP RANDOM SYMBOL INDICES TO CONSTELLATION
+# ==============================================================
+
+def modulate(symbol_indices, constellation):
+
+    return constellation[symbol_indices]
+
+
+# ==============================================================
+# 7. MINIMUM-DISTANCE DETECTOR
+# ==============================================================
+
+def detect(received, constellation):
+
+    # Euclidean distance:
+    #
+    # d = |r - s_i|^2
+
+    distance = np.abs(
+        received[:, None] - constellation[None, :]
+    ) ** 2
+
+    detected_indices = np.argmin(distance, axis=1)
+
+    return detected_indices
+
+
+# ==============================================================
+# 8. ADD AWGN
+# ==============================================================
+
+def add_awgn(symbols, EbN0_dB, bits_per_symbol):
+
+    EbN0 = 10 ** (EbN0_dB / 10)
+
+    # Es = 1
+    # Eb = Es/k
+    #
+    # N0 = Eb / (Eb/N0)
+
+    N0 = 1 / (bits_per_symbol * EbN0)
+
+    noise_sigma = np.sqrt(N0 / 2)
+
+    noise = noise_sigma * (
+        np.random.randn(len(symbols)) +
+        1j * np.random.randn(len(symbols))
+    )
+
+    return symbols + noise
+
+
+# ==============================================================
+# 9. CALCULATE BER AND SER
+# ==============================================================
+
+def simulate_errors(name, EbN0_dB, Nsymbols=30000):
+
+    constellation, labels, _, _ = get_constellation(name)
+
+    M = len(constellation)
+
+    bits_per_symbol = int(np.log2(M))
+
+    # Generate random symbol locations
+    tx_indices = np.random.randint(0, M, Nsymbols)
+
+    tx_symbols = modulate(tx_indices, constellation)
+
+    # Add AWGN
+    rx_symbols = add_awgn(
+        tx_symbols,
+        EbN0_dB,
+        bits_per_symbol
+    )
+
+    # Minimum-distance detection
+    rx_indices = detect(
+        rx_symbols,
+        constellation
+    )
+
+    # ----------------------------------------------------------
+    # SER
+    # ----------------------------------------------------------
+
+    SER = np.mean(tx_indices != rx_indices)
+
+    # ----------------------------------------------------------
+    # BER using Gray labels
+    # ----------------------------------------------------------
+
+    tx_labels = labels[tx_indices]
+    rx_labels = labels[rx_indices]
+
+    tx_bits = integers_to_bits(
+        tx_labels,
+        bits_per_symbol
+    )
+
+    rx_bits = integers_to_bits(
+        rx_labels,
+        bits_per_symbol
+    )
+
+    BER = np.mean(tx_bits != rx_bits)
+
+    return BER, SER
+
+
+# ==============================================================
+# 10. PRINT ENERGY NORMALIZATION RESULTS
+# ==============================================================
+
+modulations = [
+    "QPSK",
+    "8-PSK",
+    "16-QAM",
+    "64-QAM"
+]
+
+print("\n================================================")
+print("AVERAGE CONSTELLATION ENERGY VALIDATION")
+print("================================================")
+
+for name in modulations:
+
+    constellation, labels, E_before, E_after = \
+        get_constellation(name)
+
+    print("\n", name)
+
+    print("Average energy before normalization =",
+          round(E_before, 6))
+
+    print("Average energy after normalization  =",
+          round(E_after, 6))
+
+
+# ==============================================================
+# 11. IDEAL AND RECEIVED CONSTELLATIONS
+# ==============================================================
+
+# Required SNR values from experiment
+snr_values_constellation = [0, 5, 10, 20]
+
+for name in modulations:
+
+    constellation, labels, _, _ = \
+        get_constellation(name)
+
+    M = len(constellation)
+
+    k = int(np.log2(M))
+
+    Ndisplay = 1000
+
+    tx_indices = np.random.randint(
+        0,
+        M,
+        Ndisplay
+    )
+
+    tx_symbols = constellation[tx_indices]
+
+    # ----------------------------------------------------------
+    # IDEAL CONSTELLATION
+    # ----------------------------------------------------------
+
+    plt.figure(figsize=(6, 6))
+
+    plt.scatter(
+        constellation.real,
+        constellation.imag,
+        s=100
+    )
+
+    for i in range(M):
+
+        plt.text(
+            constellation[i].real + 0.03,
+            constellation[i].imag + 0.03,
+            format(labels[i], f"0{k}b")
+        )
+
+    plt.axhline(0)
+    plt.axvline(0)
+
+    plt.title(
+        f"Ideal Constellation - {name}"
+    )
+
+    plt.xlabel("In-phase (I)")
+    plt.ylabel("Quadrature (Q)")
+    plt.grid(True)
+    plt.axis("equal")
+    plt.tight_layout()
+    plt.show()
+
+    # ----------------------------------------------------------
+    # RECEIVED CONSTELLATIONS AT 0, 5, 10, 20 dB
+    # ----------------------------------------------------------
+
+    for snr in snr_values_constellation:
+
+        received = add_awgn(
+            tx_symbols,
+            snr,
+            k
+        )
+
+        plt.figure(figsize=(6, 6))
+
+        plt.scatter(
+            received.real,
+            received.imag,
+            s=10,
+            alpha=0.4,
+            label="Received"
+        )
+
+        plt.scatter(
+            constellation.real,
+            constellation.imag,
+            s=100,
+            marker="x",
+            label="Ideal"
+        )
+
+        plt.axhline(0)
+        plt.axvline(0)
+
+        plt.title(
+            f"{name} Received Constellation "
+            f"at Eb/N0 = {snr} dB"
+        )
+
+        plt.xlabel("In-phase (I)")
+        plt.ylabel("Quadrature (Q)")
+
+        plt.legend()
+        plt.grid(True)
+        plt.axis("equal")
+        plt.tight_layout()
+        plt.show()
+
+
+# ==============================================================
+# 12. DECISION REGIONS
+# ==============================================================
+
+for name in modulations:
+
+    constellation, labels, _, _ = \
+        get_constellation(name)
+
+    M = len(constellation)
+
+    # Determine plotting boundary
+    limit = (
+        max(
+            np.max(np.abs(constellation.real)),
+            np.max(np.abs(constellation.imag))
+        )
+        + 0.6
+    )
+
+    # Grid for decision regions
+    x = np.linspace(
+        -limit,
+        limit,
+        350
+    )
+
+    y = np.linspace(
+        -limit,
+        limit,
+        350
+    )
+
+    X, Y = np.meshgrid(x, y)
+
+    grid_points = (
+        X.ravel() +
+        1j * Y.ravel()
+    )
+
+    decisions = detect(
+        grid_points,
+        constellation
+    )
+
+    Z = decisions.reshape(X.shape)
+
+    plt.figure(figsize=(7, 6))
+
+    plt.contourf(
+        X,
+        Y,
+        Z,
+        levels=np.arange(M + 1) - 0.5,
+        alpha=0.35
+    )
+
+    plt.scatter(
+        constellation.real,
+        constellation.imag,
+        s=100,
+        marker="x"
+    )
+
+    plt.axhline(0)
+    plt.axvline(0)
+
+    plt.title(
+        f"Decision Regions - {name}"
+    )
+
+    plt.xlabel("In-phase (I)")
+    plt.ylabel("Quadrature (Q)")
+
+    plt.grid(True)
+    plt.axis("equal")
+    plt.tight_layout()
+    plt.show()
+
+
+# ==============================================================
+# 13. BER AND SER SIMULATION
+# ==============================================================
+
+EbN0_dB = np.arange(
+    0,
+    21,
+    2
+)
+
+Nsymbols = 30000
+
+BER_results = {}
+SER_results = {}
+
+print("\n================================================")
+print("BER / SER SIMULATION")
+print("================================================")
+
+for name in modulations:
+
+    BER_list = []
+    SER_list = []
+
+    print("\nProcessing", name)
+
+    for snr in EbN0_dB:
+
+        BER, SER = simulate_errors(
+            name,
+            snr,
+            Nsymbols
+        )
+
+        BER_list.append(BER)
+        SER_list.append(SER)
+
+        print(
+            f"Eb/N0 = {snr:2d} dB  "
+            f"BER = {BER:.6f}  "
+            f"SER = {SER:.6f}"
+        )
+
+    BER_results[name] = np.array(BER_list)
+    SER_results[name] = np.array(SER_list)
+
+
+# ==============================================================
+# 14. BER PLOT
+# ==============================================================
+
+plt.figure(figsize=(8, 6))
+
+for name in modulations:
+
+    # Replace exact zeros only for logarithmic visualization
+    BER_plot = np.maximum(
+        BER_results[name],
+        1e-6
+    )
+
+    plt.semilogy(
+        EbN0_dB,
+        BER_plot,
+        marker="o",
+        label=name
+    )
+
+plt.title(
+    "BER Performance of M-PSK and M-QAM"
+)
+
+plt.xlabel(
+    "$E_b/N_0$ (dB)"
+)
+
+plt.ylabel(
+    "Bit Error Rate (BER)"
+)
+
+plt.grid(
+    True,
+    which="both"
+)
+
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+
+# ==============================================================
+# 15. SER PLOT
+# ==============================================================
+
+plt.figure(figsize=(8, 6))
+
+for name in modulations:
+
+    SER_plot = np.maximum(
+        SER_results[name],
+        1e-6
+    )
+
+    plt.semilogy(
+        EbN0_dB,
+        SER_plot,
+        marker="s",
+        label=name
+    )
+
+plt.title(
+    "SER Performance of M-PSK and M-QAM"
+)
+
+plt.xlabel(
+    "$E_b/N_0$ (dB)"
+)
+
+plt.ylabel(
+    "Symbol Error Rate (SER)"
+)
+
+plt.grid(
+    True,
+    which="both"
+)
+
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+
+# ==============================================================
+# 16. BER AND SER TOGETHER
+# ==============================================================
+
+for name in modulations:
+
+    plt.figure(figsize=(8, 6))
+
+    plt.semilogy(
+        EbN0_dB,
+        np.maximum(
+            BER_results[name],
+            1e-6
+        ),
+        "o-",
+        label="BER"
+    )
+
+    plt.semilogy(
+        EbN0_dB,
+        np.maximum(
+            SER_results[name],
+            1e-6
+        ),
+        "s--",
+        label="SER"
+    )
+
+    plt.title(
+        f"BER and SER - {name}"
+    )
+
+    plt.xlabel(
+        "$E_b/N_0$ (dB)"
+    )
+
+    plt.ylabel(
+        "Error Probability"
+    )
+
+    plt.grid(
+        True,
+        which="both"
+    )
+
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+# ==============================================================
+# 17. BER VERSUS SPECTRAL EFFICIENCY
+# ==============================================================
+
+# For ideal uncoded modulation:
+#
+# Spectral efficiency approximately = log2(M) bits/s/Hz
+
+spectral_efficiency = {
+    "QPSK": 2,
+    "8-PSK": 3,
+    "16-QAM": 4,
+    "64-QAM": 6
+}
+
+
+# Choose one Eb/N0 value for comparison
+target_snr = 10
+
+index = np.where(
+    EbN0_dB == target_snr
+)[0][0]
+
+efficiency_values = []
+
+ber_values = []
+
+labels_plot = []
+
+for name in modulations:
+
+    efficiency_values.append(
+        spectral_efficiency[name]
+    )
+
+    ber_values.append(
+        max(
+            BER_results[name][index],
+            1e-6
+        )
+    )
+
+    labels_plot.append(name)
+
+
+plt.figure(figsize=(8, 6))
+
+plt.semilogy(
+    efficiency_values,
+    ber_values,
+    "o-",
+    markersize=8
+)
+
+for x_point, y_point, label in zip(
+    efficiency_values,
+    ber_values,
+    labels_plot
+):
+
+    plt.annotate(
+        label,
+        (x_point, y_point),
+        xytext=(5, 5),
+        textcoords="offset points"
+    )
+
+plt.title(
+    f"BER vs Spectral Efficiency "
+    f"at Eb/N0 = {target_snr} dB"
+)
+
+plt.xlabel(
+    "Spectral Efficiency (bits/s/Hz)"
+)
+
+plt.ylabel(
+    "Bit Error Rate (BER)"
+)
+
+plt.grid(
+    True,
+    which="both"
+)
+
+plt.tight_layout()
+plt.show()
+
+
+# ==============================================================
+# 18. PRINT FINAL COMPARISON
+# ==============================================================
+
+print("\n================================================")
+print(
+    f"BER vs SPECTRAL EFFICIENCY "
+    f"at Eb/N0 = {target_snr} dB"
+)
+print("================================================")
+
+print(
+    "{:<10} {:<20} {:<15}".format(
+        "Scheme",
+        "Efficiency(bits/s/Hz)",
+        "BER"
+    )
+)
+
+for name in modulations:
+
+    print(
+        "{:<10} {:<20} {:.6f}".format(
+            name,
+            spectral_efficiency[name],
+            BER_results[name][index]
+        )
+    )
+
+
+print("\nSimulation completed successfully.")
